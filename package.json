@@ -1,0 +1,51 @@
+{
+  "name": "react-render-profiler",
+  "version": "0.1.0",
+  "description": "Lightweight React render and rerender profiler",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc -w",
+    "test": "jest",
+    "prepublishOnly": "npm run build",
+    "lint": "eslint --ext .ts --ext .tsx ."
+  },
+  "author": "Bohdan Surai",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bsurai/react-render-profiler.git"
+  },
+  "homepage": "https://github.com/bsurai/react-render-profiler#readme",
+  "bugs": {
+    "url": "https://github.com/bsurai/react-render-profiler/issues"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "react",
+    "performance",
+    "profiler",
+    "render",
+    "rerender"
+  ],
+  "peerDependencies": {
+    "react": ">=16.8.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^18.19.130",
+    "@types/react": "^19.2.2",
+    "jest": "^30.3.0",
+    "jest-environment-jsdom": "^30.3.0",
+    "react-dom": "^19.2.5",
+    "ts-jest": "^29.4.9",
+    "typescript": "4.9.5"
+  }
+}

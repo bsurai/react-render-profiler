@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2019",
+    "module": "commonjs",
+    "lib": [
+      "dom",
+      "es2018",
+      "esnext.asynciterable"
+    ],
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "strict": true,
+    "baseUrl": ".",
+    "types": [
+      "node"
+    ],
+    "esModuleInterop": true,
+    "jsx": "react-jsx",
+    "forceConsistentCasingInFileNames": true
+  },
+  "exclude": [
+    "node_modules",
+    "dist",
+    "build",
+    "test",
+    "**/*.spec.ts"
+  ]
+}
