@@ -93,23 +93,24 @@ export const useRenderProfiler = (
 
   const renderStartRef = useRef<number>(0);
   const instanceRenderCountRef = useRef<number>(0);
+  const renderGenerationRef = useRef<number>(0);
   const statsRef = useRef<MutableStats>(createEmptyStats());
   if (groupByComponent && !groupedStatsStore.has(componentName)) {
     groupedStatsStore.set(componentName, createEmptyStats());
   }
   const activeStats = groupByComponent ? groupedStatsStore.get(componentName)! : statsRef.current;
 
+  // Record render start during render; count and measure in useEffect so totals match per-render
+  // durations. A render-generation token in the effect deps forces the effect to run after every
+  // profiled render. Without it, rerenders with the same logger/options leave deps unchanged, so React
+  // skips the effect while render-only counting would still advance — producing avg/total/min/max that
+  // disagree. Dev Strict Mode can also widen that gap by extra render passes before commit.
   if (enabled) {
     const now = performance.now();
     renderStartRef.current = now;
-    activeStats.renders += 1;
-    instanceRenderCountRef.current += 1;
-    if (instanceRenderCountRef.current === 1) {
-      activeStats.initialRenders += 1;
-    } else {
-      activeStats.rerenders += 1;
-    }
+    renderGenerationRef.current += 1;
   }
+  const renderGeneration = renderGenerationRef.current;
 
   useEffect(() => {
     if (!enabled) {
@@ -119,6 +120,14 @@ export const useRenderProfiler = (
     const end = performance.now();
     const renderDuration = end - renderStartRef.current;
     const stats = activeStats;
+
+    instanceRenderCountRef.current += 1;
+    stats.renders += 1;
+    if (instanceRenderCountRef.current === 1) {
+      stats.initialRenders += 1;
+    } else {
+      stats.rerenders += 1;
+    }
 
     stats.totalMs += renderDuration;
     stats.minMs = Math.min(stats.minMs, renderDuration);
@@ -145,7 +154,16 @@ export const useRenderProfiler = (
         stats.timerId = null;
       }
     };
-  }, [activeStats, componentName, enabled, groupByComponent, logEachRender, logger, reportAfterMs]);
+  }, [
+    activeStats,
+    componentName,
+    enabled,
+    groupByComponent,
+    logEachRender,
+    logger,
+    reportAfterMs,
+    renderGeneration
+  ]);
 };
 
 export const withRenderProfiler = <P extends object>(

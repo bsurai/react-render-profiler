@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { StrictMode } from 'react';
 import { act, render } from '@testing-library/react';
-import { useRenderProfiler, withRenderProfiler } from './index';
+import { useRenderProfiler } from './index';
 
 type ProbeProps = {
   enabled?: boolean;
@@ -98,5 +98,36 @@ describe('useRenderProfiler', () => {
     expect(payload.avgMs).toBe(4);
     expect(payload.minMs).toBe(4);
     expect(payload.maxMs).toBe(4);
+  });
+
+  it('keeps avg, min, and max consistent with totalMs under StrictMode', () => {
+    const logger = jest.fn();
+    const nowSpy = jest.spyOn(performance, 'now');
+    let t = 0;
+    nowSpy.mockImplementation(() => {
+      t += 10;
+      return t;
+    });
+
+    render(
+      <StrictMode>
+        <Probe logger={logger} reportAfterMs={3000} />
+      </StrictMode>
+    );
+
+    act(() => {
+      jest.advanceTimersByTime(3000);
+    });
+
+    expect(logger).toHaveBeenCalledTimes(1);
+    const [, payload] = logger.mock.calls[0] as [
+      string,
+      { renders: number; totalMs: number; avgMs: number; minMs: number; maxMs: number }
+    ];
+
+    expect(payload.renders).toBeGreaterThan(0);
+    expect(payload.avgMs).toBeCloseTo(payload.totalMs / payload.renders, 10);
+    expect(payload.minMs).toBeLessThanOrEqual(payload.avgMs);
+    expect(payload.avgMs).toBeLessThanOrEqual(payload.maxMs);
   });
 });
