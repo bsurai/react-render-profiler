@@ -1,184 +1,268 @@
-import React, { useEffect, useRef } from 'react';
+import React, {
+  Profiler,
+  useCallback,
+  useId,
+  useMemo,
+  type ProfilerOnRenderCallback,
+} from 'react';
 
-type LogPayload = {
-  component: string;
-  renders: number;
-  initialRenders: number;
-  rerenders: number;
-  totalMs: number;
-  avgMs: number;
-  minMs: number;
-  maxMs: number;
-};
-
-export type RenderProfilerOptions = {
+export type RenderProfilerOptions<P = unknown> = {
   componentName?: string;
-  groupByComponent?: boolean;
   reportAfterMs?: number;
-  logEachRender?: boolean;
-  enabled?: boolean;
-  logger?: (label: string, payload: LogPayload) => void;
-};
-
-export type RenderProfilerHOCOptions<P> = Omit<RenderProfilerOptions, 'enabled'> & {
+  groupByComponent?: boolean;
+  log?: (rows: LogPayload[]) => void;
   enabled?: boolean | ((props: P) => boolean);
 };
 
-type MutableStats = {
+export type LogPayload = {
+  componentName: string;
   renders: number;
-  initialRenders: number;
-  rerenders: number;
-  totalMs: number;
-  minMs: number;
-  maxMs: number;
-  timerId: ReturnType<typeof setTimeout> | null;
+  mountPhases: number;
+  updatePhases: number;
+  totalActualMs: number;
+  minActualMs: number;
+  maxActualMs: number;
+  totalBaseMs: number;
 };
 
-const defaultLogger = (label: string, payload: LogPayload): void => {
-  // Console table keeps output readable when multiple profiled components run.
+type InternalBucket = LogPayload;
+
+const buckets = new Map<string, InternalBucket>();
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function defaultEnabledByEnv(): boolean {
+  if (typeof process !== 'undefined' && process.env && process.env.NODE_ENV === 'production') {
+    return false;
+  }
+  return true;
+}
+
+function round3(n: number): number {
+  return Math.round(n * 1000) / 1000;
+}
+
+function touchBucket(key: string, displayName: string): InternalBucket {
+  let bucket = buckets.get(key);
+  if (!bucket) {
+    bucket = {
+      componentName: displayName,
+      renders: 0,
+      mountPhases: 0,
+      updatePhases: 0,
+      totalActualMs: 0,
+      minActualMs: Number.POSITIVE_INFINITY,
+      maxActualMs: 0,
+      totalBaseMs: 0,
+    };
+    buckets.set(key, bucket);
+  }
+  return bucket;
+}
+
+function defaultLogger(rows: LogPayload[]): void {
+  const tableRows = rows.map((row) => ({
+    component: row.componentName,
+    renders: row.renders,
+    mounts: row.mountPhases,
+    updates: row.updatePhases,
+    totalMs: round3(row.totalActualMs),
+    minMs: row.renders ? round3(row.minActualMs) : 0,
+    maxMs: round3(row.maxActualMs),
+    avgMs: row.renders ? round3(row.totalActualMs / row.renders) : 0,
+    baseMs: round3(row.totalBaseMs),
+  }));
+
   // eslint-disable-next-line no-console
-  console.table([{ label, ...payload }]);
-};
+  console.table(tableRows);
+}
 
-const groupedStatsStore = new Map<string, MutableStats>();
-
-const createEmptyStats = (): MutableStats => ({
-  renders: 0,
-  initialRenders: 0,
-  rerenders: 0,
-  totalMs: 0,
-  minMs: Number.POSITIVE_INFINITY,
-  maxMs: 0,
-  timerId: null
-});
-
-const scheduleReport = (
-  componentName: string,
-  stats: MutableStats,
-  reportAfterMs: number,
-  logger: (label: string, payload: LogPayload) => void
-): void => {
-  if (stats.timerId) {
-    clearTimeout(stats.timerId);
+function scheduleFlush(reportAfterMs: number, log: (rows: LogPayload[]) => void): void {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
   }
 
-  stats.timerId = setTimeout(() => {
-    const avg = stats.renders > 0 ? stats.totalMs / stats.renders : 0;
-    const payload: LogPayload = {
-      component: componentName,
-      renders: stats.renders,
-      initialRenders: stats.initialRenders,
-      rerenders: stats.rerenders,
-      totalMs: Number(stats.totalMs.toFixed(2)),
-      avgMs: Number(avg.toFixed(2)),
-      minMs: Number((Number.isFinite(stats.minMs) ? stats.minMs : 0).toFixed(2)),
-      maxMs: Number(stats.maxMs.toFixed(2))
-    };
-
-    logger(`[RenderProfiler] ${componentName}`, payload);
+  debounceTimer = setTimeout(() => {
+    debounceTimer = null;
+    const rows = [...buckets.values()].map((bucket) => ({ ...bucket }));
+    buckets.clear();
+    if (rows.length) {
+      log(rows);
+    }
   }, reportAfterMs);
+}
+
+function normalizePhase(phase: 'mount' | 'update' | 'nested-update'): 'mount' | 'update' {
+  return phase === 'mount' ? 'mount' : 'update';
+}
+
+function recordProfilerSample(
+  aggregateKey: string,
+  displayName: string,
+  phase: 'mount' | 'update' | 'nested-update',
+  actualDuration: number,
+  baseDuration: number,
+  reportAfterMs: number,
+  log: (rows: LogPayload[]) => void,
+): void {
+  const bucket = touchBucket(aggregateKey, displayName);
+  const normalizedPhase = normalizePhase(phase);
+
+  bucket.renders += 1;
+  if (normalizedPhase === 'mount') {
+    bucket.mountPhases += 1;
+  } else {
+    bucket.updatePhases += 1;
+  }
+
+  bucket.totalActualMs += actualDuration;
+  bucket.minActualMs = Math.min(bucket.minActualMs, actualDuration);
+  bucket.maxActualMs = Math.max(bucket.maxActualMs, actualDuration);
+  bucket.totalBaseMs += baseDuration;
+
+  scheduleFlush(reportAfterMs, log);
+}
+
+function resolveEnabled<P>(options: RenderProfilerOptions<P>, props: P): boolean {
+  const { enabled } = options;
+  if (enabled === undefined) {
+    return defaultEnabledByEnv();
+  }
+  if (typeof enabled === 'function') {
+    return Boolean(enabled(props));
+  }
+  return enabled;
+}
+
+export type RenderProfilerProps = {
+  id: string;
+  children: React.ReactNode;
+} & Omit<RenderProfilerOptions<never>, 'enabled'> & {
+  enabled?: boolean;
 };
 
-export const useRenderProfiler = (
+export function RenderProfiler({
+  id,
+  children,
+  reportAfterMs = 500,
+  groupByComponent = false,
+  log = defaultLogger,
+  enabled,
+}: RenderProfilerProps): React.ReactElement {
+  const instanceId = useId();
+  const aggregateKey = groupByComponent ? id : `${id} (${instanceId})`;
+
+  const onRender = useCallback<ProfilerOnRenderCallback>(
+    (_profilerId, phase, actualDuration, baseDuration) => {
+      recordProfilerSample(
+        aggregateKey,
+        id,
+        phase,
+        actualDuration,
+        baseDuration,
+        reportAfterMs,
+        log,
+      );
+    },
+    [aggregateKey, id, log, reportAfterMs],
+  );
+
+  const isEnabled = enabled === undefined ? defaultEnabledByEnv() : Boolean(enabled);
+
+  if (!isEnabled) {
+    return <>{children}</>;
+  }
+
+  return (
+    <Profiler id={aggregateKey} onRender={onRender}>
+      {children}
+    </Profiler>
+  );
+}
+
+export function useRenderProfiler(
   componentName: string,
-  options: RenderProfilerOptions = {}
-): void => {
-  const {
-    groupByComponent = false,
-    reportAfterMs = 3000,
-    logEachRender = false,
-    enabled = true,
-    logger = defaultLogger
-  } = options;
+  options: Omit<RenderProfilerOptions<never>, 'enabled'> & { enabled?: boolean } = {},
+): {
+  profilerId: string;
+  onRender: ProfilerOnRenderCallback;
+  enabled: boolean;
+} {
+  const { reportAfterMs = 500, groupByComponent = false, log = defaultLogger } = options;
+  const instanceId = useId();
+  const aggregateKey = useMemo(
+    () => (groupByComponent ? componentName : `${componentName} (${instanceId})`),
+    [componentName, groupByComponent, instanceId],
+  );
 
-  const renderStartRef = useRef<number>(0);
-  const instanceRenderCountRef = useRef<number>(0);
-  const renderGenerationRef = useRef<number>(0);
-  const statsRef = useRef<MutableStats>(createEmptyStats());
-  if (groupByComponent && !groupedStatsStore.has(componentName)) {
-    groupedStatsStore.set(componentName, createEmptyStats());
-  }
-  const activeStats = groupByComponent ? groupedStatsStore.get(componentName)! : statsRef.current;
+  const onRender = useCallback<ProfilerOnRenderCallback>(
+    (_id, phase, actualDuration, baseDuration) => {
+      recordProfilerSample(
+        aggregateKey,
+        componentName,
+        phase,
+        actualDuration,
+        baseDuration,
+        reportAfterMs,
+        log,
+      );
+    },
+    [aggregateKey, componentName, log, reportAfterMs],
+  );
 
-  // Record render start during render; count and measure in useEffect so totals match per-render
-  // durations. A render-generation token in the effect deps forces the effect to run after every
-  // profiled render. Without it, rerenders with the same logger/options leave deps unchanged, so React
-  // skips the effect while render-only counting would still advance — producing avg/total/min/max that
-  // disagree. Dev Strict Mode can also widen that gap by extra render passes before commit.
-  if (enabled) {
-    const now = performance.now();
-    renderStartRef.current = now;
-    renderGenerationRef.current += 1;
-  }
-  const renderGeneration = renderGenerationRef.current;
-
-  useEffect(() => {
-    if (!enabled) {
-      return;
+  const enabledByOption = useMemo(() => {
+    if (options.enabled === undefined) {
+      return defaultEnabledByEnv();
     }
+    return Boolean(options.enabled);
+  }, [options.enabled]);
 
-    const end = performance.now();
-    const renderDuration = end - renderStartRef.current;
-    const stats = activeStats;
+  return {
+    profilerId: aggregateKey,
+    onRender,
+    enabled: enabledByOption,
+  };
+}
 
-    instanceRenderCountRef.current += 1;
-    stats.renders += 1;
-    if (instanceRenderCountRef.current === 1) {
-      stats.initialRenders += 1;
-    } else {
-      stats.rerenders += 1;
-    }
-
-    stats.totalMs += renderDuration;
-    stats.minMs = Math.min(stats.minMs, renderDuration);
-    stats.maxMs = Math.max(stats.maxMs, renderDuration);
-
-    if (logEachRender) {
-      logger(`[RenderProfiler] ${componentName}#${stats.renders}`, {
-        component: componentName,
-        renders: stats.renders,
-        initialRenders: stats.initialRenders,
-        rerenders: stats.rerenders,
-        totalMs: Number(stats.totalMs.toFixed(2)),
-        avgMs: Number((stats.totalMs / stats.renders).toFixed(2)),
-        minMs: Number(stats.minMs.toFixed(2)),
-        maxMs: Number(stats.maxMs.toFixed(2))
-      });
-    }
-
-    scheduleReport(componentName, stats, reportAfterMs, logger);
-
-    return () => {
-      if (!groupByComponent && stats.timerId) {
-        clearTimeout(stats.timerId);
-        stats.timerId = null;
-      }
-    };
-  }, [
-    activeStats,
-    componentName,
-    enabled,
-    groupByComponent,
-    logEachRender,
-    logger,
-    reportAfterMs,
-    renderGeneration
-  ]);
-};
-
-export const withRenderProfiler = <P extends object>(
+export function withRenderProfiler<P extends object>(
   WrappedComponent: React.ComponentType<P>,
-  options: RenderProfilerHOCOptions<P> = {}
-): React.FC<P> => {
-  const wrappedName = options.componentName || WrappedComponent.displayName || WrappedComponent.name || 'AnonymousComponent';
+  options: RenderProfilerOptions<P> = {},
+): React.FC<P> {
+  const fallbackName = WrappedComponent.displayName || WrappedComponent.name || 'Component';
+  const wrappedName = options.componentName || fallbackName;
 
-  const ProfiledComponent: React.FC<P> = (props) => {
-    const { enabled = true, ...restOptions } = options;
-    const resolvedEnabled = typeof enabled === 'function' ? enabled(props) : enabled;
-    useRenderProfiler(wrappedName, { ...restOptions, enabled: resolvedEnabled });
-    return <WrappedComponent {...props} />;
+  const Profiled: React.FC<P> = (props) => {
+    const { reportAfterMs = 500, groupByComponent = false, log = defaultLogger } = options;
+
+    const instanceId = useId();
+    const aggregateKey = groupByComponent ? wrappedName : `${wrappedName} (${instanceId})`;
+
+    const onRender = useCallback<ProfilerOnRenderCallback>(
+      (_profilerId, phase, actualDuration, baseDuration) => {
+        recordProfilerSample(
+          aggregateKey,
+          wrappedName,
+          phase,
+          actualDuration,
+          baseDuration,
+          reportAfterMs,
+          log,
+        );
+      },
+      [aggregateKey, log, reportAfterMs, wrappedName],
+    );
+
+    const isEnabled = resolveEnabled(options, props);
+    if (!isEnabled) {
+      return <WrappedComponent {...props} />;
+    }
+
+    return (
+      <Profiler id={aggregateKey} onRender={onRender}>
+        <WrappedComponent {...props} />
+      </Profiler>
+    );
   };
 
-  ProfiledComponent.displayName = `withRenderProfiler(${wrappedName})`;
-  return ProfiledComponent;
-};
+  Profiled.displayName = `withRenderProfiler(${wrappedName})`;
+  return Profiled;
+}

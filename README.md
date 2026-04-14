@@ -1,6 +1,6 @@
 # React Render Profiler
 
-A tiny profiler helper to measure initial render + rerender timings for React components.
+Profiler helpers built on React's `<Profiler>` callback with debounced aggregation output.
 
 ## Install
 
@@ -8,127 +8,101 @@ A tiny profiler helper to measure initial render + rerender timings for React co
 npm i react-render-profiler
 ```
 
-## Why
+## What It Gives You
 
-Use it when you want:
+- Render samples from React `actualDuration` and `baseDuration`
+- Aggregated reporting with debounce (`reportAfterMs`)
+- Three integration styles:
+  - `withRenderProfiler(Component, options?)`
+  - `<RenderProfiler id="...">...</RenderProfiler>`
+  - `useRenderProfiler(componentName, options?)`
 
-- render count and rerender count per component instance
-- approximate commit timing (`render start` -> `useEffect`)
-- delayed aggregated reporting to keep console noise low
+By default profiling is **disabled in production** (`NODE_ENV === "production"`).
 
-## Usage (HOC)
+## Usage
+
+### HOC
 
 ```tsx
 import { withRenderProfiler } from 'react-render-profiler';
-import { ProductCard } from './ProductCard';
 
-export default withRenderProfiler(ProductCard, {
-  reportAfterMs: 5000,
-  logEachRender: false
-});
-```
-
-## Actual usage patterns
-
-### 1) Wrap component on export (global for all usages)
-
-```tsx
-function MenuItem(props) {
-  ...
-}
-
-export default withRenderProfiler(MenuItem, {
-  componentName: 'MenuItem',
-  groupByComponent: true,
-  enabled: process.env.NODE_ENV !== 'production',
-  reportAfterMs: 5000,
-});
-```
-
-### 2) Wrap only in one place (recommended for focused profiling)
-
-```tsx
-const FooterProfiled = withRenderProfiler(FooterWidget, {
-  componentName: 'HomePage:FooterWidget',
-  groupByComponent: true,
-  enabled: process.env.NODE_ENV !== 'production',
-  reportAfterMs: 5000,
-});
-
-// Inside ProductPage:
-<RecommendationsWidgetProfiled productAlias={product.alias} />
-```
-
-## Measure only specific usage
-
-For HOC usage, `enabled` can be a function of component props.  
-This lets you measure only specific places/instances and keep others unprofiled.
-
-```tsx
-type CardProps = { alias: string; profileRender?: boolean };
-
-const ProductCardProfiled = withRenderProfiler<CardProps>(ProductCard, {
+const ProfiledCard = withRenderProfiler(ProductCard, {
   componentName: 'ProductCard',
   groupByComponent: true,
-  enabled: (props) => props.profileRender === true,
+  reportAfterMs: 1000,
 });
-
-// Only this usage is measured:
-<ProductCardProfiled alias="a" profileRender />
-
-// This usage is ignored by profiler:
-<ProductCardProfiled alias="b" />
 ```
 
-## Usage (Hook)
+### Wrapper Component
 
 ```tsx
+import { RenderProfiler } from 'react-render-profiler';
+
+export function ProductSection() {
+  return (
+    <RenderProfiler id="ProductSection" groupByComponent reportAfterMs={1000}>
+      <ProductList />
+    </RenderProfiler>
+  );
+}
+```
+
+### Hook (manual `<Profiler>` placement)
+
+```tsx
+import { Profiler } from 'react';
 import { useRenderProfiler } from 'react-render-profiler';
 
 export function CheckoutSidebar() {
-  useRenderProfiler('CheckoutSidebar', { reportAfterMs: 3000 });
-  return <aside>...</aside>;
+  const { profilerId, onRender, enabled } = useRenderProfiler('CheckoutSidebar', {
+    reportAfterMs: 1000,
+  });
+
+  if (!enabled) {
+    return <aside>...</aside>;
+  }
+
+  return (
+    <Profiler id={profilerId} onRender={onRender}>
+      <aside>...</aside>
+    </Profiler>
+  );
 }
 ```
 
 ## API
 
+### `RenderProfilerOptions<P>`
+
+- `componentName?: string`
+- `reportAfterMs?: number` (default `500`)
+- `groupByComponent?: boolean` (default `false`)
+- `log?: (rows: LogPayload[]) => void` (default `console.table` sink)
+- `enabled?: boolean | ((props: P) => boolean)`
+
+### `LogPayload`
+
+- `componentName`
+- `renders`
+- `mountPhases`
+- `updatePhases`
+- `totalActualMs`
+- `minActualMs`
+- `maxActualMs`
+- `totalBaseMs`
+
 ### `withRenderProfiler(Component, options?)`
 
-Wraps a component and reports stats to console after inactivity timeout.
+Wraps a component in `<Profiler>`, supporting `enabled` as boolean or predicate function.
+
+### `RenderProfiler`
+
+Component form:
+
+```tsx
+<RenderProfiler id="MySection">{children}</RenderProfiler>
+```
 
 ### `useRenderProfiler(componentName, options?)`
 
-Hook variant when you do not want to wrap export.
-
-### `options`
-
-- `reportAfterMs` (default `3000`) - report debounce timeout
-- `groupByComponent` (default `false`) - aggregate all instances under one component report
-- `logEachRender` (default `false`) - emit log on every commit
-- `enabled` (default `true`) - disable profiler globally (`boolean`) or for HOC by props (`(props) => boolean`)
-- `logger` - custom logger function for integrating with your telemetry
-
-### Typical presets
-
-- **Page/widget profiling**: `{ componentName, groupByComponent: true, enabled: dev, reportAfterMs: 5000 }`
-- **Instance-level profiling**: `{ componentName, enabled: (props) => ..., reportAfterMs: 2000-5000 }`
-
-## Notes
-
-- In React StrictMode (development), render/effect invocations can be doubled.
-- This helper measures render-to-effect timing, not full browser paint time.
-
-## Report Fields
-
-Each console row includes these fields:
-
-- `label` - logger label, usually `[RenderProfiler] <ComponentName>`
-- `component` - component name used for profiling/grouping
-- `renders` - total committed renders counted in this profile bucket
-- `initialRenders` - number of first renders for mounted instances in this bucket
-- `rerenders` - number of subsequent renders (`renders - initialRenders`)
-- `totalMs` - sum of measured render durations in milliseconds
-- `avgMs` - average render duration (`totalMs / renders`)
-- `minMs` - fastest measured render duration in milliseconds
-- `maxMs` - slowest measured render duration in milliseconds
+Returns `{ profilerId, onRender, enabled }` for manual `<Profiler>` usage.

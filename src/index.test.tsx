@@ -1,19 +1,20 @@
-import React, { StrictMode } from 'react';
+import React, { useEffect } from 'react';
 import { act, render } from '@testing-library/react';
-import { useRenderProfiler } from './index';
+import {
+  RenderProfiler,
+  type LogPayload,
+  useRenderProfiler,
+  withRenderProfiler,
+} from './index';
 
-type ProbeProps = {
-  enabled?: boolean;
-  reportAfterMs?: number;
-  logger?: (label: string, payload: unknown) => void;
-};
+function getSingleRow(log: jest.Mock): LogPayload {
+  expect(log).toHaveBeenCalledTimes(1);
+  const rows = log.mock.calls[0][0] as LogPayload[];
+  expect(rows).toHaveLength(1);
+  return rows[0];
+}
 
-const Probe: React.FC<ProbeProps> = ({ enabled = true, reportAfterMs = 3000, logger }) => {
-  useRenderProfiler('Probe', { enabled, reportAfterMs, logger });
-  return <div>probe</div>;
-};
-
-describe('useRenderProfiler', () => {
+describe('react-render-profiler', () => {
   beforeEach(() => {
     jest.useFakeTimers();
   });
@@ -21,113 +22,91 @@ describe('useRenderProfiler', () => {
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
+    process.env.NODE_ENV = 'test';
   });
 
-  it('does not log when disabled', () => {
-    const logger = jest.fn();
+  it('useRenderProfiler aggregates mount and update samples', () => {
+    const log = jest.fn();
 
-    render(<Probe enabled={false} logger={logger} />);
+    const Probe: React.FC = () => {
+      const { onRender } = useRenderProfiler('Probe', { reportAfterMs: 100, log });
+
+      useEffect(() => {
+        onRender('probe', 'mount', 3, 5, 0, 0);
+        onRender('probe', 'update', 7, 9, 0, 0);
+      }, [onRender]);
+
+      return <div>probe</div>;
+    };
+
+    render(<Probe />);
 
     act(() => {
-      jest.advanceTimersByTime(3000);
+      jest.advanceTimersByTime(100);
     });
 
-    expect(logger).not.toHaveBeenCalled();
+    const row = getSingleRow(log);
+    expect(row.componentName).toBe('Probe');
+    expect(row.renders).toBe(2);
+    expect(row.mountPhases).toBe(1);
+    expect(row.updatePhases).toBe(1);
+    expect(row.totalActualMs).toBe(10);
+    expect(row.minActualMs).toBe(3);
+    expect(row.maxActualMs).toBe(7);
+    expect(row.totalBaseMs).toBe(14);
   });
 
-  it('tracks initial render and rerender counts', () => {
-    const logger = jest.fn();
-    const nowSpy = jest.spyOn(performance, 'now');
-    nowSpy
-      .mockReturnValueOnce(10)
-      .mockReturnValueOnce(20)
-      .mockReturnValueOnce(30)
-      .mockReturnValueOnce(50);
-
-    const { rerender } = render(<Probe logger={logger} reportAfterMs={3000} />);
-    rerender(<Probe logger={logger} reportAfterMs={3000} />);
-
-    act(() => {
-      jest.advanceTimersByTime(3000);
-    });
-
-    expect(logger).toHaveBeenCalledTimes(1);
-    const [, payload] = logger.mock.calls[0] as [string, { initialRenders: number; rerenders: number; renders: number }];
-    expect(payload.initialRenders).toBe(1);
-    expect(payload.rerenders).toBe(1);
-    expect(payload.renders).toBe(2);
-  });
-
-  it('emits delayed aggregate report after timeout', () => {
-    const logger = jest.fn();
-    const nowSpy = jest.spyOn(performance, 'now');
-    nowSpy.mockReturnValueOnce(5).mockReturnValueOnce(9);
-
-    render(<Probe logger={logger} reportAfterMs={3000} />);
-
-    act(() => {
-      jest.advanceTimersByTime(2999);
-    });
-    expect(logger).not.toHaveBeenCalled();
-
-    act(() => {
-      jest.advanceTimersByTime(1);
-    });
-
-    expect(logger).toHaveBeenCalledTimes(1);
-    const [label, payload] = logger.mock.calls[0] as [
-      string,
-      {
-        component: string;
-        renders: number;
-        initialRenders: number;
-        rerenders: number;
-        totalMs: number;
-        avgMs: number;
-        minMs: number;
-        maxMs: number;
-      }
-    ];
-
-    expect(label).toBe('[RenderProfiler] Probe');
-    expect(payload.component).toBe('Probe');
-    expect(payload.renders).toBe(1);
-    expect(payload.initialRenders).toBe(1);
-    expect(payload.rerenders).toBe(0);
-    expect(payload.totalMs).toBe(4);
-    expect(payload.avgMs).toBe(4);
-    expect(payload.minMs).toBe(4);
-    expect(payload.maxMs).toBe(4);
-  });
-
-  it('keeps avg, min, and max consistent with totalMs under StrictMode', () => {
-    const logger = jest.fn();
-    const nowSpy = jest.spyOn(performance, 'now');
-    let t = 0;
-    nowSpy.mockImplementation(() => {
-      t += 10;
-      return t;
-    });
+  it('RenderProfiler does not call log when disabled', () => {
+    const log = jest.fn();
 
     render(
-      <StrictMode>
-        <Probe logger={logger} reportAfterMs={3000} />
-      </StrictMode>
+      <RenderProfiler id="DisabledProbe" enabled={false} reportAfterMs={50} log={log}>
+        <div>child</div>
+      </RenderProfiler>,
     );
 
     act(() => {
-      jest.advanceTimersByTime(3000);
+      jest.advanceTimersByTime(50);
     });
 
-    expect(logger).toHaveBeenCalledTimes(1);
-    const [, payload] = logger.mock.calls[0] as [
-      string,
-      { renders: number; totalMs: number; avgMs: number; minMs: number; maxMs: number }
-    ];
+    expect(log).not.toHaveBeenCalled();
+  });
 
-    expect(payload.renders).toBeGreaterThan(0);
-    expect(payload.avgMs).toBeCloseTo(payload.totalMs / payload.renders, 10);
-    expect(payload.minMs).toBeLessThanOrEqual(payload.avgMs);
-    expect(payload.avgMs).toBeLessThanOrEqual(payload.maxMs);
+  it('withRenderProfiler supports enabled(props) predicate', () => {
+    const log = jest.fn();
+
+    const View: React.FC<{ shouldProfile: boolean }> = () => <div>view</div>;
+    const ProfiledView = withRenderProfiler(View, {
+      componentName: 'PredicateView',
+      enabled: (props) => props.shouldProfile,
+      reportAfterMs: 100,
+      log,
+    });
+
+    const { rerender } = render(<ProfiledView shouldProfile={false} />);
+    rerender(<ProfiledView shouldProfile={true} />);
+
+    act(() => {
+      jest.advanceTimersByTime(100);
+    });
+
+    expect(log).toHaveBeenCalledTimes(1);
+    const row = getSingleRow(log);
+    expect(row.componentName).toBe('PredicateView');
+    expect(row.renders).toBeGreaterThan(0);
+  });
+
+  it('defaults to disabled in production for hook API', () => {
+    process.env.NODE_ENV = 'production';
+
+    let enabled = true;
+    const Probe: React.FC = () => {
+      const result = useRenderProfiler('ProdProbe');
+      enabled = result.enabled;
+      return null;
+    };
+
+    render(<Probe />);
+    expect(enabled).toBe(false);
   });
 });

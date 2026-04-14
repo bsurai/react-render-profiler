@@ -1,7 +1,7 @@
 {
   "name": "react-render-profiler",
-  "version": "0.1.1",
-  "description": "Lightweight React render and rerender profiler",
+  "version": "0.2.0",
+  "description": "React render profiling via Profiler API with debounced aggregated reporting",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
@@ -30,11 +30,14 @@
     "react",
     "performance",
     "profiler",
+    "react-profiler",
     "render",
-    "rerender"
+    "rerender",
+    "actualduration",
+    "baseduration"
   ],
   "peerDependencies": {
-    "react": ">=16.8.0"
+    "react": ">=18.0.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
